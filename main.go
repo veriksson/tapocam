@@ -5,7 +5,6 @@ import (
 	"bytes"
 	"errors"
 	"flag"
-	"fmt"
 	"net/http"
 	"net/url"
 	"os"
@@ -16,13 +15,15 @@ import (
 )
 
 var (
-	portFlag   = flag.String("port", ":8989", "port to listen on")
-	lookupFlag = flag.String("lookup", "./lookup", "lookup file")
+	portFlag      = flag.String("port", ":8989", "port to listen on")
+	lookupFlag    = flag.String("lookup", "./lookup", "lookup file")
+	cacheTimeFlag = flag.Int64("cacheTime", 5, "Number of minutes to cache thumbnail")
 )
 
 func main() {
 	flag.Parse()
 	cache := &cache{
+		t: time.Duration(*cacheTimeFlag),
 		c: make(map[string]struct {
 			d time.Time
 			b []byte
@@ -103,6 +104,7 @@ func generateThumbnail(uri *url.URL) ([]byte, error) {
 }
 
 type cache struct {
+	t time.Duration
 	c map[string]struct {
 		d time.Time
 		b []byte
@@ -112,7 +114,7 @@ type cache struct {
 func (c *cache) getOrAdd(url string, imageFunc func() ([]byte, error)) []byte {
 	old := func(current time.Time) bool {
 		diff := time.Since(current)
-		return diff > (1 * time.Minute)
+		return diff > (c.t * time.Minute)
 	}
 	if v, ok := c.c[url]; ok {
 		if old(v.d) {
@@ -123,7 +125,6 @@ func (c *cache) getOrAdd(url string, imageFunc func() ([]byte, error)) []byte {
 	}
 	b, err := imageFunc()
 	if err != nil {
-		fmt.Printf(err.Error())
 		return nil
 	}
 	c.c[url] = struct {
