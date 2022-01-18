@@ -85,7 +85,6 @@ func thumbnail(cache *cache, lookup func(string) (string, error)) func(http.Resp
 func generateThumbnail(uri *url.URL) ([]byte, error) {
 	prog := "ffmpeg"
 	args := []string{
-		// "-seekable", "1",
 		"-i", uri.String(),
 		"-vf", "thumbnail",
 		"-frames:v", "1",
