@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -30,6 +31,9 @@ func main() {
 		}),
 	}
 
+	t := thumbnailer{
+		c: cache,
+	}
 	lookupdata := readLookupData(*lookupFlag)
 	lookupFunc := func(name string) (string, error) {
 		if v, ok := lookupdata[name]; ok {
@@ -38,7 +42,19 @@ func main() {
 		return "", errors.New("invalid camera name")
 	}
 
-	http.HandleFunc("/cam/thumb/", thumbnail(cache, lookupFunc))
+	var keys []string
+	for k := range lookupdata {
+		keys = append(keys, k)
+	}
+	go func() {
+		t.refresh(keys...)
+		c := time.Tick(time.Duration(*cacheTimeFlag) * time.Minute)
+		for range c {
+			t.refresh(keys...)
+		}
+	}()
+
+	http.HandleFunc("/cam/thumb/", thumbnail(&t, lookupFunc))
 	http.ListenAndServe(*portFlag, nil)
 }
 
@@ -56,7 +72,7 @@ func readLookupData(file string) map[string]string {
 	return lookupdata
 }
 
-func thumbnail(cache *cache, lookup func(string) (string, error)) func(http.ResponseWriter, *http.Request) {
+func thumbnail(t *thumbnailer, lookup func(string) (string, error)) func(http.ResponseWriter, *http.Request) {
 	return func(w http.ResponseWriter, r *http.Request) {
 		name := r.URL.Path[len("/cam/thumb/"):]
 		cam, err := lookup(name)
@@ -65,13 +81,7 @@ func thumbnail(cache *cache, lookup func(string) (string, error)) func(http.Resp
 			return
 		}
 
-		img := cache.getOrAdd(cam, func() ([]byte, error) {
-			uri, err := url.Parse(cam)
-			if err != nil {
-				return nil, err
-			}
-			return generateThumbnail(uri)
-		})
+		img := t.thumbnail(cam)
 		if img == nil {
 			http.Error(w, "invalid camera feed", http.StatusInternalServerError)
 			return
@@ -82,7 +92,39 @@ func thumbnail(cache *cache, lookup func(string) (string, error)) func(http.Resp
 	}
 }
 
-func generateThumbnail(uri *url.URL) ([]byte, error) {
+type thumbnailer struct {
+	mu sync.Mutex
+	c  *cache
+}
+
+func (t *thumbnailer) thumbnail(key string) []byte {
+	return t.c.getOrAdd(key, func() ([]byte, error) {
+		uri, err := url.Parse(key)
+		if err != nil {
+			return nil, err
+		}
+		return t.generateThumbnail(uri)
+	})
+}
+
+func (t *thumbnailer) refresh(keys ...string) {
+	for _, key := range keys {
+		uri, err := url.Parse(key)
+		if err != nil {
+			continue
+		}
+		thumb, err := t.generateThumbnail(uri)
+		if err != nil {
+			continue
+		}
+
+		t.mu.Lock()
+		t.c.set(key, thumb)
+		t.mu.Unlock()
+	}
+}
+
+func (t *thumbnailer) generateThumbnail(uri *url.URL) ([]byte, error) {
 	prog := "ffmpeg"
 	args := []string{
 		"-i", uri.String(),
@@ -108,6 +150,13 @@ type cache struct {
 		d time.Time
 		b []byte
 	}
+}
+
+func (c *cache) set(url string, thumb []byte) {
+	c.c[url] = struct {
+		d time.Time
+		b []byte
+	}{time.Now(), thumb}
 }
 
 func (c *cache) getOrAdd(url string, imageFunc func() ([]byte, error)) []byte {
